@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "ux_device_cdc_acm.h": "c",
+        "usb_otg.h": "c"
+    }
+}

@@ -30,7 +30,7 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ux_device_class_cdc_acm.h"
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -51,7 +51,10 @@ extern "C" {
 /* Exported functions prototypes ---------------------------------------------*/
 
 /* USER CODE BEGIN EFP */
-
+VOID ux_app_parameters_change(VOID *command);
+void CDC_DeInit_FS(void *cdc_acm);
+void CDC_Init_FS(void *cdc_acm);
+void usbx_cdc_acm_read_thread_entry(ULONG arg);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

@@ -307,9 +307,9 @@
 
 /* Defined, this value will only enable the host side of usbx.  */
 
-#define UX_HOST_SIDE_ONLY
+//#define UX_HOST_SIDE_ONLY
 
-#define UX_DEVICE_SIDE_ONLY
+//#define UX_DEVICE_SIDE_ONLY
 
 /* Defined, this value will include the OTG polling thread. OTG can only be active if both host/device are present.
 */
