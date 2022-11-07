@@ -23,15 +23,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "usb_otg.h"
-#include "ux_system.h"
-#include "ux_utility.h"
-#include "ux_device_stack.h"
-#include "ux_dcd_stm32.h"
-#include "ux_device_descriptors.h"
-#include "ux_device_cdc_acm.h"
-#include "app_azure_rtos_config.h"
-#include "app_usbx_device.h"
+
+
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,6 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define APP_QUEUE_SIZE                               1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -55,6 +50,22 @@ TX_THREAD               ux_cdc_write_thread;
 
 TX_EVENT_FLAGS_GROUP    EventFlag;
 
+extern HCD_HandleTypeDef                 hhcd_USB_OTG_HS;
+TX_THREAD                                keyboard_app_thread;
+TX_THREAD                                mouse_app_thread;
+TX_QUEUE                                 ux_app_MsgQueue;
+UX_HOST_CLASS_HID                        *hid;
+UX_HOST_CLASS_HID_CLIENT                 *hid_client;
+UX_HOST_CLASS_HID_MOUSE                  *mouse;
+UX_HOST_CLASS_HID_KEYBOARD               *keyboard;
+
+#if defined ( __ICCARM__ ) /* IAR Compiler */
+  #pragma data_alignment=4
+#endif /* defined ( __ICCARM__ ) */
+__ALIGN_BEGIN ux_app_devInfotypeDef       ux_dev_info  __ALIGN_END;
+
+CHAR *pointer_mouse_app_thread;
+CHAR *pointer_APP_QUEUE_SIZE;
 /* CDC Class Calling Parameter structure */
 UX_SLAVE_CLASS_CDC_ACM_PARAMETER    cdc_acm_parameter;
 
@@ -90,6 +101,12 @@ void usbx_app_start_device(void);
 void usbx_app_stop_device(void);
 void usbx_app_start_host(void);
 void usbx_app_stop_host(void);
+
+void usbx_app_process_host(void);
+
+UINT  ux_host_event_callback(ULONG event, UX_HOST_CLASS *p_host_class, VOID *p_instance);
+
+static void  USBH_DriverVBUS(uint8_t state);
 /* USER CODE END PFP */
 /**
   * @brief  Application USBX Host Initialization.
@@ -150,16 +167,55 @@ UINT MX_USBX_Host_Init(VOID *memory_ptr)
     {
       return TX_POOL_ERROR;
     }
+
+    /*host*/
+
+    /* Allocate the stack for thread 1. */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer_mouse_app_thread,
+                       USBX_APP_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
+
+
+
+  /* Allocate Memory for the Queue */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer_APP_QUEUE_SIZE,
+                       APP_QUEUE_SIZE * sizeof(ULONG), TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
   /* USER CODE END MX_USBX_Host_Init */
 
   return ret;
+}
+
+extern PCD_HandleTypeDef hpcd_USB_OTG_HS;
+extern HCD_HandleTypeDef hhcd_USB_OTG_HS;
+uint32_t usbDeviceHostState=2;
+
+
+void OTG_HS_IRQHandler(void)
+{
+  /* USER CODE BEGIN OTG_HS_IRQn 0 */
+
+  /* USER CODE END OTG_HS_IRQn 0 */
+  if((usbDeviceHostState == 0) || (usbDeviceHostState==1)){
+
+    HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS);
+  }else{
+    HAL_HCD_IRQHandler(&hhcd_USB_OTG_HS);
+  }
+  /* USER CODE BEGIN OTG_HS_IRQn 1 */
+
+  /* USER CODE END OTG_HS_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */
 void usbx_app_thread_entry(ULONG arg)
 {
   GPIO_PinState recognizeState=0; 
-  uint32_t usbDeviceHostState=0;
+
   uint32_t oldUsbDeviceHostState=0xFF;
   GPIO_PinState oldRecognizeState=0; 
   /**
@@ -178,35 +234,41 @@ void usbx_app_thread_entry(ULONG arg)
 
 
     recognizeState = HAL_GPIO_ReadPin(GPIOA,GPIO_PIN_10);
-   if((recognizeState!=oldRecognizeState)||(usbDeviceHostState!=oldUsbDeviceHostState))
-   {
-     switch (usbDeviceHostState)
-     {
-     case 0:
-       if(recognizeState == GPIO_PIN_SET){
-         usbDeviceHostState=1;
-         usbx_app_start_device();
+    // if((recognizeState!=oldRecognizeState)||(usbDeviceHostState!=oldUsbDeviceHostState))
+    // {
+      switch (usbDeviceHostState)
+      {
+        case 0:
+            usbDeviceHostState=1;
+            //usbx_app_start_device();
+        break;
+        case 1:
+            //usbx_app_stop_device();
+          if(recognizeState == GPIO_PIN_RESET){
+            usbDeviceHostState=2;
+          }
+        break;
+        case 2:
+            usbx_app_start_host();
+            usbDeviceHostState=3;
+        break;
 
-       }
-       break;
-       case 1:
-       if(recognizeState == GPIO_PIN_RESET){
-         usbDeviceHostState=0;
-         usbx_app_stop_device();
-       }
-       break;
+        case 3:
+          usbx_app_process_host();
+          if(recognizeState==GPIO_PIN_SET){
+            usbDeviceHostState=4;
+          }
+        break;
 
-     default:
+        case 4:
+          usbx_app_stop_host();
+          usbDeviceHostState=0;
+        break;
 
-       break;
-     }
-     oldRecognizeState=recognizeState;
-     oldUsbDeviceHostState=usbDeviceHostState;
-   }
+        default:
+        break;
+      }
   }
-
-
-
 }
 
 
@@ -317,10 +379,255 @@ void usbx_app_stop_device(){
 }
 
 void usbx_app_start_host(){
+        /* The code below is required for installing the host portion of USBX. */
+        if (ux_host_stack_initialize(ux_host_event_callback) != UX_SUCCESS)
+        {
+          return UX_ERROR;
+        }
 
+        /* Register hid class. */
+        if (ux_host_stack_class_register(_ux_system_host_class_hid_name,
+                                        _ux_host_class_hid_entry) != UX_SUCCESS)
+        {
+          return UX_ERROR;
+        }
+
+        /* Register HID Mouse client */
+        if (ux_host_class_hid_client_register(_ux_system_host_class_hid_client_mouse_name,
+                                              ux_host_class_hid_mouse_entry) != UX_SUCCESS)
+        {
+          return UX_ERROR;
+        }
+
+        /* Initialize the LL driver */
+        MX_USB_OTG_HS_HCD_Init();
+
+        /* Register all the USB host controllers available in this system.  */
+        if (ux_host_stack_hcd_register(_ux_system_host_hcd_stm32_name,
+                                      _ux_hcd_stm32_initialize, USB_OTG_HS_PERIPH_BASE,
+                                      (ULONG)&hhcd_USB_OTG_HS) != UX_SUCCESS)
+        {
+          return UX_ERROR;
+        }
+
+        /* Drive vbus */
+        USBH_DriverVBUS(USB_VBUS_TRUE);
+
+        /* Enable USB Global Interrupt*/
+        HAL_HCD_Start(&hhcd_USB_OTG_HS);
+
+              /* Create the HID mouse App thread. */
+        if (tx_thread_create(&mouse_app_thread, "thread 1", hid_mouse_thread_entry, 0,
+                            pointer_mouse_app_thread, USBX_APP_STACK_SIZE, 30, 30, 1,
+                            TX_AUTO_START) != TX_SUCCESS)
+        {
+          return TX_THREAD_ERROR;
+        }
+        /* Create the MsgQueue */
+        if (tx_queue_create(&ux_app_MsgQueue, "Message Queue app", TX_1_ULONG,
+                            pointer_APP_QUEUE_SIZE, APP_QUEUE_SIZE * sizeof(ULONG)) != TX_SUCCESS)
+        {
+          return TX_QUEUE_ERROR;
+        }
+}
+
+void usbx_app_process_host(){
+  
+          /* Wait for a hid device to be connected */
+          if (tx_queue_receive(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT)== TX_SUCCESS)
+          {
+            if (ux_dev_info.Dev_state == Device_connected)
+            {
+              switch (ux_dev_info.Device_Type)
+              {
+                case Mouse_Device :
+                  mouse = hid_client-> ux_host_class_hid_client_local_instance;
+                  break;
+
+                case Keyboard_Device :
+                  keyboard = hid_client-> ux_host_class_hid_client_local_instance;
+
+                  break;
+
+                case Unknown_Device :
+                  break;
+
+                default :
+                  break;
+              }
+            }
+            else
+            {
+              /* clear hid_client local instance */
+              mouse = NULL;
+              keyboard = NULL;
+            }
+          }
+          tx_thread_sleep(MS_TO_TICK(10));
 }
 
 void usbx_app_stop_host(){
+ UINT retVal;
+  /* Enable USB Global Interrupt*/
+  HAL_HCD_Stop(&hhcd_USB_OTG_HS);
 
+        /* Drive vbus */
+  USBH_DriverVBUS(USB_VBUS_FALSE);
+
+  retVal =tx_thread_terminate(&mouse_app_thread);
+  if (retVal != TX_SUCCESS){
+    while(1);
+  }
+
+  retVal = tx_thread_delete(&mouse_app_thread);
+  if (retVal != TX_SUCCESS){
+    while(1);
+  }
+  retVal = tx_queue_delete(&ux_app_MsgQueue);
+  if (retVal != TX_SUCCESS){
+    while(1);
+  }
+
+  retVal = ux_host_stack_uninitialize();
+  if (retVal != TX_SUCCESS){
+    while(1);
+  }
+  MX_USB_OTG_HS_HCD_DeInit();
+}
+
+/**
+* @brief  Drive VBUS.
+* @param  state : VBUS state
+*          This parameter can be one of the these values:
+*           1 : VBUS Active
+*           0 : VBUS Inactive
+* @retval Status
+*/
+static void USBH_DriverVBUS(uint8_t state)
+{
+  /* USER CODE BEGIN 0 */
+
+  /* USER CODE END 0*/
+
+  if (state == USB_VBUS_TRUE)
+  {
+    /* Drive high Charge pump */
+    /* Add IOE driver control */
+    /* USER CODE BEGIN DRIVE_HIGH_CHARGE_FOR_HS */
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_10, GPIO_PIN_RESET);
+    /* USER CODE END DRIVE_HIGH_CHARGE_FOR_HS */
+  }
+  else
+  {
+    /* Drive low Charge pump */
+    /* Add IOE driver control */
+    /* USER CODE BEGIN DRIVE_LOW_CHARGE_FOR_HS */
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_10, GPIO_PIN_SET);
+    /* USER CODE END DRIVE_LOW_CHARGE_FOR_HS */
+  }
+
+  HAL_Delay(200);
+}
+
+/**
+* @brief ux_host_event_callback
+* @param ULONG event
+           This parameter can be one of the these values:
+             1 : UX_DEVICE_INSERTION
+             2 : UX_DEVICE_REMOVAL
+             3 : UX_HID_CLIENT_INSERTION
+             4 : UX_HID_CLIENT_REMOVAL
+         UX_HOST_CLASS * Current_class
+         VOID * Current_instance
+* @retval Status
+*/
+UINT ux_host_event_callback(ULONG event, UX_HOST_CLASS *Current_class, VOID *Current_instance)
+{
+  UINT status;
+  UX_HOST_CLASS *hid_class;
+
+  switch (event)
+  {
+    case UX_DEVICE_INSERTION :
+      /* Get current Hid Class */
+      status = ux_host_stack_class_get(_ux_system_host_class_hid_name, &hid_class);
+
+      if (status == UX_SUCCESS)
+      {
+        if ((hid_class == Current_class) && (hid == NULL))
+        {
+          /* Get current Hid Instance */
+          hid = Current_instance;
+          /* Get the HID Client */
+          hid_client = hid ->ux_host_class_hid_client;
+
+          if (hid->ux_host_class_hid_client->ux_host_class_hid_client_status != (ULONG) UX_HOST_CLASS_INSTANCE_LIVE)
+          {
+            ux_dev_info.Device_Type = Unknown_Device;
+          }
+          /* Check the HID_client if this is a HID mouse device. */
+          if (ux_utility_memory_compare(hid_client -> ux_host_class_hid_client_name,
+                                        _ux_system_host_class_hid_client_mouse_name,
+                                        ux_utility_string_length_get(_ux_system_host_class_hid_client_mouse_name)) == UX_SUCCESS)
+          {
+            /* update HID device Type */
+            ux_dev_info.Device_Type = Mouse_Device;
+
+            /* put a message queue to usbx_app_thread_entry */
+            tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
+          }
+
+          /* Check the HID_client if this is a HID keyboard device. */
+          else if (ux_utility_memory_compare(hid_client -> ux_host_class_hid_client_name,
+                                             _ux_system_host_class_hid_client_keyboard_name,
+                                             ux_utility_string_length_get(_ux_system_host_class_hid_client_keyboard_name)) == UX_SUCCESS)
+          {
+            /* update HID device Type */
+            ux_dev_info.Device_Type = Keyboard_Device;
+
+            /* put a message queue to usbx_app_thread_entry */
+            tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
+          }
+          else
+          {
+            ux_dev_info.Device_Type = Unknown_Device;
+            ux_dev_info.Dev_state = Device_connected;
+            tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
+          }
+        }
+      }
+      else
+      {
+      }
+      break;
+
+    case UX_DEVICE_REMOVAL :
+
+      if (Current_instance == hid)
+      {
+        /* Free Instance */
+        hid = NULL;
+        ux_dev_info.Dev_state   = No_Device;
+        ux_dev_info.Device_Type = Unknown_Device;
+      }
+      break;
+
+    case UX_HID_CLIENT_INSERTION :
+      ux_dev_info.Dev_state = Device_connected;
+      break;
+
+    case UX_HID_CLIENT_REMOVAL:
+      ux_dev_info.Dev_state   =  Device_disconnected;
+      ux_dev_info.Device_Type =  Unknown_Device;
+      tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
+
+      break;
+
+    default:
+      break;
+
+  }
+
+  return (UINT) UX_SUCCESS;
 }
 /* USER CODE END 1 */
