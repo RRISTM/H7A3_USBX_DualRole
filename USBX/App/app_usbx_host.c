@@ -66,6 +66,20 @@ UCHAR *pointer_ux;
 UCHAR *pointer_ux_app_thread;
 UCHAR *pointer_ux_cdc_read_thread;
  uint32_t connectionState = 0;
+
+
+ /* Device framework FS length*/
+ULONG device_framework_fs_length;
+/* Device String framework length*/
+ULONG string_framework_length;
+/* Device language id framework length*/
+ULONG languge_id_framework_length;
+/* Device Framework Full Speed */
+UCHAR *device_framework_full_speed;
+/* String Framework*/
+UCHAR *string_framework;
+/* Language_Id_Framework*/
+UCHAR *language_id_framework;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,6 +109,16 @@ UINT MX_USBX_Host_Init(VOID *memory_ptr)
 
     UCHAR *pointer;
 
+
+    /* Get_Device_Framework_Full_Speed and get the length */
+    device_framework_full_speed = USBD_Get_Device_Framework_Speed(USBD_FULL_SPEED,
+                                  &device_framework_fs_length);
+
+    /* Get_String_Framework and get the length */
+    string_framework = USBD_Get_String_Framework(&string_framework_length);
+
+    /* Get_Language_Id_Framework and get the length */
+    language_id_framework = USBD_Get_Language_Id_Framework(&languge_id_framework_length);
 
     /* Allocate USBX_MEMORY_SIZE. */
     if (tx_byte_allocate(byte_pool, (VOID **) &pointer_ux,
@@ -149,36 +173,36 @@ void usbx_app_thread_entry(ULONG arg)
   {
     return UX_ERROR;
   }
-    //usbx_app_start_device();
+    // usbx_app_start_device();
   while(1){
 
 
     recognizeState = HAL_GPIO_ReadPin(GPIOA,GPIO_PIN_10);
-    if((recognizeState!=oldRecognizeState)||(usbDeviceHostState!=oldUsbDeviceHostState))
-    {
-      switch (usbDeviceHostState)
-      {
-      case 0:
-        if(recognizeState == GPIO_PIN_SET){
-          usbDeviceHostState=1;
-          usbx_app_start_device();
+   if((recognizeState!=oldRecognizeState)||(usbDeviceHostState!=oldUsbDeviceHostState))
+   {
+     switch (usbDeviceHostState)
+     {
+     case 0:
+       if(recognizeState == GPIO_PIN_SET){
+         usbDeviceHostState=1;
+         usbx_app_start_device();
 
-        }
-        break;
-        case 1:
-        if(recognizeState == GPIO_PIN_RESET){
-          usbDeviceHostState=0;
-          usbx_app_stop_device();
-        }
-        break;
+       }
+       break;
+       case 1:
+       if(recognizeState == GPIO_PIN_RESET){
+         usbDeviceHostState=0;
+         usbx_app_stop_device();
+       }
+       break;
 
-      default:
+     default:
 
-        break;
-      }
-      oldRecognizeState=recognizeState;
-      usbDeviceHostState=oldUsbDeviceHostState;
-    }
+       break;
+     }
+     oldRecognizeState=recognizeState;
+     oldUsbDeviceHostState=usbDeviceHostState;
+   }
   }
 
 
@@ -188,33 +212,16 @@ void usbx_app_thread_entry(ULONG arg)
 
 void usbx_app_start_device(){
   /* USER CODE BEGIN USB_Device_Init_PreTreatment_0 */
-    /* Device framework FS length*/
-  ULONG device_framework_fs_length;
-  /* Device String framework length*/
-  ULONG string_framework_length;
-  /* Device language id framework length*/
-  ULONG languge_id_framework_length;
-  /* Device Framework Full Speed */
-  UCHAR *device_framework_full_speed;
-  /* String Framework*/
-  UCHAR *string_framework;
-  /* Language_Id_Framework*/
-  UCHAR *language_id_framework;
+
   /* Initialize USBX Memory */
 
-  /* Get_Device_Framework_Full_Speed and get the length */
-  device_framework_full_speed = USBD_Get_Device_Framework_Speed(USBD_FULL_SPEED,
-                                &device_framework_fs_length);
+  UINT retVal;
 
-  /* Get_String_Framework and get the length */
-  string_framework = USBD_Get_String_Framework(&string_framework_length);
 
-  /* Get_Language_Id_Framework and get the length */
-  language_id_framework = USBD_Get_Language_Id_Framework(&languge_id_framework_length);
 
   /* The code below is required for installing the device portion of USBX.
     In this application */
-  if (ux_device_stack_initialize(NULL,
+  retVal =ux_device_stack_initialize(NULL,
                                 0U,
                                 device_framework_full_speed,
                                 device_framework_fs_length,
@@ -222,9 +229,9 @@ void usbx_app_start_device(){
                                 string_framework_length,
                                 language_id_framework,
                                 languge_id_framework_length,
-                NULL) != UX_SUCCESS)
-  {
-    return UX_ERROR;
+                NULL);
+  if(retVal != TX_SUCCESS){
+    while(1);
   }
 
   /* Initialize the cdc class parameters for the device. */
@@ -242,7 +249,7 @@ void usbx_app_start_device(){
                                     ux_device_class_cdc_acm_entry, 1, 0,
                                     (VOID *)&cdc_acm_parameter) != UX_SUCCESS)
   {
-    return UX_ERROR;
+	    while(1);
   }
 
   /* Create the usbx_cdc_acm_read_thread_entry thread. */
@@ -251,7 +258,7 @@ void usbx_app_start_device(){
                        USBX_APP_STACK_SIZE, 20, 20, TX_NO_TIME_SLICE,
                        TX_AUTO_START) != TX_SUCCESS)
   {
-    return TX_THREAD_ERROR;
+	    while(1);
   }
   /* USER CODE END USB_Device_Init_PreTreatment_0 */
 
@@ -289,25 +296,21 @@ void usbx_app_stop_device(){
   UINT retVal;
   HAL_PCD_Stop(&hpcd_USB_OTG_HS);
 
-  retVal = ux_device_stack_uninitialize();
-  if(TX_SUCCESS != TX_SUCCESS){
-    while(1);
-  }
   retVal = tx_thread_terminate(&ux_cdc_read_thread);
-  if(TX_SUCCESS != TX_SUCCESS){
+  if(retVal != TX_SUCCESS){
     while(1);
   }
   retVal = tx_thread_delete(&ux_cdc_read_thread);
-  if(TX_SUCCESS != TX_SUCCESS){
+  if(retVal != TX_SUCCESS){
     while(1);
   }
   retVal = ux_device_stack_uninitialize();
-  if(TX_SUCCESS != TX_SUCCESS){
+  if(retVal != TX_SUCCESS){
     while(1);
   }
 
   retVal =_ux_dcd_stm32_uninitialize((ULONG)USB_OTG_HS, (ULONG)&hpcd_USB_OTG_HS);
-  if(TX_SUCCESS != TX_SUCCESS){
+  if(retVal != TX_SUCCESS){
     while(1);
   }
   MX_USB_OTG_HS_PCD_DeInit();
