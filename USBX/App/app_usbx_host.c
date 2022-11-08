@@ -105,6 +105,7 @@ void usbx_app_stop_host(void);
 void usbx_app_process_host(void);
 
 UINT  ux_host_event_callback(ULONG event, UX_HOST_CLASS *p_host_class, VOID *p_instance);
+VOID  ux_host_error_callback(UINT system_level, UINT system_context, UINT error_code);
 
 static void  USBH_DriverVBUS(uint8_t state);
 /* USER CODE END PFP */
@@ -192,7 +193,7 @@ UINT MX_USBX_Host_Init(VOID *memory_ptr)
 
 extern PCD_HandleTypeDef hpcd_USB_OTG_HS;
 extern HCD_HandleTypeDef hhcd_USB_OTG_HS;
-uint32_t usbDeviceHostState=2;
+uint32_t usbDeviceHostState=3;
 
 
 void OTG_HS_IRQHandler(void)
@@ -200,7 +201,7 @@ void OTG_HS_IRQHandler(void)
   /* USER CODE BEGIN OTG_HS_IRQn 0 */
 
   /* USER CODE END OTG_HS_IRQn 0 */
-  if((usbDeviceHostState == 0) || (usbDeviceHostState==1)){
+  if((usbDeviceHostState == 0) || (usbDeviceHostState==1) ||  (usbDeviceHostState==2)){
 
     HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS);
   }else{
@@ -216,7 +217,7 @@ void usbx_app_thread_entry(ULONG arg)
 {
   GPIO_PinState recognizeState=0; 
 
-  uint32_t oldUsbDeviceHostState=0xFF;
+  uint32_t oldUsbDeviceHostState=0x2;
   GPIO_PinState oldRecognizeState=0; 
   /**
    * 0 - nothign connected - host active
@@ -230,6 +231,8 @@ void usbx_app_thread_entry(ULONG arg)
     return UX_ERROR;
   }
     // usbx_app_start_device();
+  /* register a callback error function */
+  _ux_utility_error_callback_register(&ux_host_error_callback);
   while(1){
 
 
@@ -239,28 +242,30 @@ void usbx_app_thread_entry(ULONG arg)
       switch (usbDeviceHostState)
       {
         case 0:
-            usbDeviceHostState=1;
-            //usbx_app_start_device();
+          usbx_app_start_device();
+          usbDeviceHostState=1;
         break;
         case 1:
-            //usbx_app_stop_device();
           if(recognizeState == GPIO_PIN_RESET){
             usbDeviceHostState=2;
           }
         break;
         case 2:
-            usbx_app_start_host();
-            usbDeviceHostState=3;
+          usbx_app_stop_device();
+          usbDeviceHostState=3;
         break;
-
         case 3:
+          usbx_app_start_host();
+          usbDeviceHostState=4;
+        break;
+        case 4:
           usbx_app_process_host();
           if(recognizeState==GPIO_PIN_SET){
-            usbDeviceHostState=4;
+            usbDeviceHostState=5;
           }
         break;
 
-        case 4:
+        case 5:
           usbx_app_stop_host();
           usbDeviceHostState=0;
         break;
@@ -268,6 +273,7 @@ void usbx_app_thread_entry(ULONG arg)
         default:
         break;
       }
+      tx_thread_sleep(MS_TO_TICK(10)); tx_thread_sleep(MS_TO_TICK(10));
   }
 }
 
@@ -366,15 +372,15 @@ void usbx_app_stop_device(){
   if(retVal != TX_SUCCESS){
     while(1);
   }
+  retVal =_ux_dcd_stm32_uninitialize((ULONG)USB_OTG_HS, (ULONG)&hpcd_USB_OTG_HS);
+  if(retVal != TX_SUCCESS){
+    while(1);
+  }
   retVal = ux_device_stack_uninitialize();
   if(retVal != TX_SUCCESS){
     while(1);
   }
 
-  retVal =_ux_dcd_stm32_uninitialize((ULONG)USB_OTG_HS, (ULONG)&hpcd_USB_OTG_HS);
-  if(retVal != TX_SUCCESS){
-    while(1);
-  }
   MX_USB_OTG_HS_PCD_DeInit();
 }
 
@@ -463,7 +469,7 @@ void usbx_app_process_host(){
               keyboard = NULL;
             }
           }
-          tx_thread_sleep(MS_TO_TICK(10));
+
 }
 
 void usbx_app_stop_host(){
@@ -474,6 +480,26 @@ void usbx_app_stop_host(){
         /* Drive vbus */
   USBH_DriverVBUS(USB_VBUS_FALSE);
 
+
+  // __disable_irq();
+
+    /* Register all the USB host controllers available in this system.  */
+  retVal =ux_host_stack_hcd_unregister(_ux_system_host_hcd_stm32_name,
+                                  USB_OTG_HS_PERIPH_BASE,
+                                (ULONG)&hhcd_USB_OTG_HS);
+  if (retVal != TX_SUCCESS){
+    while(1);
+  }
+
+        /* Register hid class. */
+  retVal = ux_host_stack_class_unregister(_ux_host_class_hid_entry);
+  if (retVal != TX_SUCCESS){
+    while(1);
+  }
+  retVal = ux_host_stack_uninitialize();
+  if (retVal != TX_SUCCESS){
+    while(1);
+  }
   retVal =tx_thread_terminate(&mouse_app_thread);
   if (retVal != TX_SUCCESS){
     while(1);
@@ -487,11 +513,7 @@ void usbx_app_stop_host(){
   if (retVal != TX_SUCCESS){
     while(1);
   }
-
-  retVal = ux_host_stack_uninitialize();
-  if (retVal != TX_SUCCESS){
-    while(1);
-  }
+  // __enable_irq();
   MX_USB_OTG_HS_HCD_DeInit();
 }
 
@@ -629,5 +651,31 @@ UINT ux_host_event_callback(ULONG event, UX_HOST_CLASS *Current_class, VOID *Cur
   }
 
   return (UINT) UX_SUCCESS;
+}
+
+/**
+* @brief ux_host_error_callback
+* @param ULONG event
+         UINT system_context
+         UINT error_code
+* @retval Status
+*/
+VOID ux_host_error_callback(UINT system_level, UINT system_context, UINT error_code)
+{
+  switch (error_code)
+  {
+    case UX_DEVICE_ENUMERATION_FAILURE :
+
+      ux_dev_info.Device_Type = Unknown_Device;
+      ux_dev_info.Dev_state   = Device_connected;
+      tx_queue_send(&ux_app_MsgQueue, &ux_dev_info, TX_NO_WAIT);
+      break;
+
+    case  UX_NO_DEVICE_CONNECTED :
+      break;
+
+    default:
+      break;
+  }
 }
 /* USER CODE END 1 */
